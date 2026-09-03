@@ -5,12 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nodetrade"
 version = "0.1.0"
-description = "Adaptive, scenario-based XAUUSD research and trading engine"
+description = "Adaptive AI-assisted XAUUSD trading engine"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.26", "pandas>=2.1", "scikit-learn>=1.4"]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+
+[project.scripts]
+nodetrade = "nodetrade.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
