@@ -11,10 +11,13 @@ def candles(n=260):
     rng = np.random.default_rng(11)
     r = rng.normal(0.0001, 0.002, n)
     close = 2000 * np.exp(np.cumsum(r))
+    open_ = np.r_[close[0], close[:-1]]
+    hi_base = np.maximum(open_, close)
+    lo_base = np.minimum(open_, close)
     return pd.DataFrame({
-        "open": np.r_[close[0], close[:-1]],
-        "high": close * (1 + rng.uniform(0, .0015, n)),
-        "low": close * (1 - rng.uniform(0, .0015, n)),
+        "open": open_,
+        "high": hi_base * (1 + rng.uniform(0, .0015, n)),
+        "low": lo_base * (1 - rng.uniform(0, .0015, n)),
         "close": close,
         "volume": rng.integers(100, 1000, n),
     })
