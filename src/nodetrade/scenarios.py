@@ -7,25 +7,27 @@ from .types import Regime, Scenario
 
 
 class ScenarioEngine:
-    """Generate probabilistic forward paths from causal return statistics."""
+    """Generate reproducible probabilistic forward paths from causal return statistics."""
 
     def __init__(self, seed: int = 7, simulations: int = 400):
-        self.rng = np.random.default_rng(seed)
+        self.seed = seed
         self.simulations = simulations
 
     def generate(self, df: pd.DataFrame, regime: Regime, horizon: int = 10) -> list[Scenario]:
         close = df["close"].astype(float).to_numpy()
         returns = np.diff(np.log(close))
-        if len(returns) < 30:
+        if len(returns) < 30 or horizon <= 0:
             return []
         recent = returns[-30:]
         drift = float(np.mean(recent))
         sigma = float(np.std(recent, ddof=1))
         if not np.isfinite(sigma) or sigma <= 0:
             return []
+        # Seed by observable input length so identical inputs reproduce identical paths.
+        rng = np.random.default_rng(self.seed + len(df) * 1009 + horizon * 9176)
         paths = np.empty((self.simulations, horizon + 1))
         paths[:, 0] = close[-1]
-        shocks = self.rng.normal(drift, sigma, size=(self.simulations, horizon))
+        shocks = rng.normal(drift, sigma, size=(self.simulations, horizon))
         paths[:, 1:] = close[-1] * np.exp(np.cumsum(shocks, axis=1))
         terminal = paths[:, -1]
         current = close[-1]
