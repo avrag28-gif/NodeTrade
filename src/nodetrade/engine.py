@@ -8,7 +8,7 @@ from .market_state import detect_regime
 from .opportunity import choose_opportunity
 from .risk import RiskEngine, RiskState
 from .scenarios import ScenarioEngine
-from .types import Action, Signal
+from .types import Action, Regime, Signal
 
 
 class NodeTradeEngine:
@@ -21,10 +21,10 @@ class NodeTradeEngine:
 
     def analyze(self, candles: pd.DataFrame, bid: float | None = None, ask: float | None = None, equity: float = 100.0, day_start_equity: float | None = None) -> Signal:
         if len(candles) < self.config.model.min_history:
-            return Signal(Action.WAIT, 0.0, __import__('nodetrade.types', fromlist=['Regime']).Regime.UNKNOWN, None, None, None, 0.0, reasons=["insufficient_history"])
+            return Signal(Action.WAIT, 0.0, Regime.UNKNOWN, None, None, None, 0.0, reasons=["insufficient_history"])
         x = make_features(candles).dropna()
         if len(x) < self.config.model.min_history:
-            return Signal(Action.WAIT, 0.0, __import__('nodetrade.types', fromlist=['Regime']).Regime.UNKNOWN, None, None, None, 0.0, reasons=["insufficient_clean_history"])
+            return Signal(Action.WAIT, 0.0, Regime.UNKNOWN, None, None, None, 0.0, reasons=["insufficient_clean_history"])
         last_close = float(x.close.iloc[-1])
         bid = last_close if bid is None else bid
         ask = last_close if ask is None else ask
