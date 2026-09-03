@@ -17,9 +17,18 @@ class ModelConfig:
     horizons: tuple[int, ...] = (1, 3, 5, 10, 20)
     min_history: int = 100
     min_confidence: float = 0.55
+    flat_threshold: float = 0.001
+    refresh_bars: int = 20
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    slippage_per_unit: float = 0.05
+    commission_per_unit: float = 0.0
 
 
 @dataclass(frozen=True)
 class EngineConfig:
     risk: RiskConfig = RiskConfig()
     model: ModelConfig = ModelConfig()
+    execution: ExecutionConfig = ExecutionConfig()
