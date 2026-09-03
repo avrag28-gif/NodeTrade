@@ -29,13 +29,14 @@ class ScenarioEngine:
         paths[:, 1:] = close[-1] * np.exp(np.cumsum(shocks, axis=1))
         terminal = paths[:, -1]
         current = close[-1]
-        labels = [("down", terminal < current), ("flat", (terminal >= current * .998) & (terminal <= current * 1.002)), ("up", terminal > current)]
+        down = terminal < current * 0.998
+        flat = (terminal >= current * 0.998) & (terminal <= current * 1.002)
+        up = terminal > current * 1.002
         scenarios: list[Scenario] = []
-        for name, mask in labels:
+        for name, mask in (("down", down), ("flat", flat), ("up", up)):
             if not mask.any():
                 continue
-            p = float(mask.mean())
             subset = paths[mask]
             end = float(np.median(subset[:, -1]))
-            scenarios.append(Scenario(name=name, probability=p, expected_return=end / current - 1, target=end, path=[float(x) for x in np.median(subset, axis=0)]))
+            scenarios.append(Scenario(name=name, probability=float(mask.mean()), expected_return=end / current - 1, target=end, path=[float(v) for v in np.median(subset, axis=0)]))
         return scenarios
