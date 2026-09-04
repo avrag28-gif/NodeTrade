@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="NodeTrade public performance dashboard">
+  <title>NodeTrade — Public Performance</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><strong>NodeTrade</strong><span> Public Performance</span></div>
+    <div id="status" class="status">Loading…</div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">LIVE PERFORMANCE</p>
+        <h1>NodeTrade Performance</h1>
+        <p class="muted">Public, read-only statistics. No account credentials, controls, developer tools, or private data are exposed here.</p>
+      </div>
+      <div class="updated">Updated <strong id="updatedAt">—</strong></div>
+    </section>
+
+    <section class="grid cards">
+      <article class="card"><span>Net P/L</span><strong id="netPnl">—</strong></article>
+      <article class="card"><span>Return</span><strong id="returnPct">—</strong></article>
+      <article class="card"><span>Win rate</span><strong id="winRate">—</strong></article>
+      <article class="card"><span>Max drawdown</span><strong id="drawdown">—</strong></article>
+      <article class="card"><span>Profit factor</span><strong id="profitFactor">—</strong></article>
+      <article class="card"><span>Total trades</span><strong id="trades">—</strong></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Equity curve</h2><span id="period">—</span></div>
+      <div class="chart-wrap"><canvas id="equityChart" aria-label="Equity curve"></canvas></div>
+    </section>
+
+    <section class="grid two">
+      <section class="panel"><div class="panel-head"><h2>Risk & quality</h2></div><dl id="riskList"></dl></section>
+      <section class="panel"><div class="panel-head"><h2>System status</h2></div><dl id="systemList"></dl></section>
+    </section>
+
+    <section class="panel disclaimer">
+      <h2>Transparency</h2>
+      <p>Performance shown here is historical/system-level information and is not a guarantee of future results. Statistics may be delayed and should be interpreted together with the stated period, costs, and drawdown.</p>
+    </section>
+  </main>
+
+  <footer>NodeTrade • Public read-only dashboard</footer>
+  <script src="./app.js"></script>
+</body>
+</html>
