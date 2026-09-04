@@ -22,13 +22,12 @@ class License:
     expires_at: int | None = None
 
     def active(self, now: int | None = None) -> bool:
-        if not self.enabled:
-            return False
-        return self.expires_at is None or (now or int(time.time())) < self.expires_at
+        now = int(time.time()) if now is None else now
+        return self.enabled and (self.expires_at is None or now < self.expires_at)
 
 
 class LicenseStore:
-    """Small SQLite license store; plaintext activation keys are never persisted."""
+    """SQLite store for licenses, sessions and idempotent event keys."""
 
     def __init__(self, path: str | os.PathLike[str] = "nodetrade.db") -> None:
         self.path = str(path)
@@ -38,15 +37,29 @@ class LicenseStore:
                 "account_id TEXT PRIMARY KEY, key_hash TEXT NOT NULL, "
                 "enabled INTEGER NOT NULL DEFAULT 1, expires_at INTEGER)"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS sessions ("
+                "token_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL, "
+                "created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS idempotency ("
+                "account_id TEXT NOT NULL, event_key TEXT NOT NULL, "
+                "created_at INTEGER NOT NULL, PRIMARY KEY(account_id,event_key))"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(self.path)
+        return sqlite3.connect(self.path, timeout=10)
 
     @staticmethod
     def _hash(account_id: str, activation_key: str, secret: str) -> str:
         msg = f"{account_id}:{activation_key}".encode()
         return hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
 
     def provision(self, account_id: str, activation_key: str, secret: str, expires_at: int | None = None) -> None:
         digest = self._hash(account_id, activation_key, secret)
@@ -67,8 +80,47 @@ class LicenseStore:
             return False
         if row[2] is not None and int(time.time()) >= int(row[2]):
             return False
-        expected = self._hash(account_id, activation_key, secret)
-        return hmac.compare_digest(str(row[0]), expected)
+        return hmac.compare_digest(str(row[0]), self._hash(account_id, activation_key, secret))
+
+    def create_session(self, account_id: str, activation_key: str, secret: str, ttl_seconds: int = 3600) -> str | None:
+        if not self.verify(account_id, activation_key, secret):
+            return None
+        token = secrets.token_urlsafe(32)
+        now = int(time.time())
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO sessions(token_hash,account_id,created_at,last_seen) VALUES(?,?,?,?)",
+                (self._token_hash(token), account_id, now, now),
+            )
+        return token
+
+    def authenticate(self, token: str, account_id: str, max_age: int = 3600) -> bool:
+        token_hash = self._token_hash(token)
+        now = int(time.time())
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT created_at FROM sessions WHERE token_hash=? AND account_id=?",
+                (token_hash, account_id),
+            ).fetchone()
+            if row is None:
+                return False
+            if now - int(row[0]) >= max_age:
+                db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
+                return False
+            db.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (now, token_hash))
+        return True
+
+    def accept_event_once(self, account_id: str, event_key: str) -> bool:
+        now = int(time.time())
+        try:
+            with self._connect() as db:
+                db.execute(
+                    "INSERT INTO idempotency(account_id,event_key,created_at) VALUES(?,?,?)",
+                    (account_id, event_key, now),
+                )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
 def create_app(
@@ -78,14 +130,13 @@ def create_app(
 ) -> Any:
     """Create the HTTP API used by the MT5 EA.
 
-    FastAPI is imported lazily so the research/core package remains usable without
-    installing server dependencies. Production deployments should put this service
-    behind HTTPS and a reverse proxy/rate limiter.
+    The API accepts activation credentials only at /v1/activate and then uses a
+    short-lived bearer session. Put this service behind HTTPS and a rate limiter.
     """
     try:
         from fastapi import FastAPI, Header, HTTPException
         from pydantic import BaseModel, Field
-    except ImportError as exc:  # pragma: no cover - environment dependent
+    except ImportError as exc:  # pragma: no cover
         raise RuntimeError("Install the 'server' extra to run NodeTrade API") from exc
 
     class Candle(BaseModel):
@@ -96,9 +147,12 @@ def create_app(
         close: float = Field(gt=0)
         volume: float = Field(ge=0)
 
-    class AnalyzeRequest(BaseModel):
+    class ActivateRequest(BaseModel):
         account_id: str = Field(min_length=1, max_length=128)
         activation_key: str = Field(min_length=1, max_length=256)
+
+    class AnalyzeRequest(BaseModel):
+        account_id: str = Field(min_length=1, max_length=128)
         symbol: str = Field(min_length=1, max_length=64)
         bid: float = Field(gt=0)
         ask: float = Field(gt=0)
@@ -106,41 +160,91 @@ def create_app(
         day_start_equity: float | None = Field(default=None, gt=0)
         candles: list[Candle] = Field(min_length=100, max_length=5000)
 
-    class HealthResponse(BaseModel):
-        status: str
-        version: str
+    class HeartbeatRequest(BaseModel):
+        account_id: str = Field(min_length=1, max_length=128)
+        symbol: str = Field(min_length=1, max_length=64)
+        terminal_time: int = Field(gt=0)
 
-    app = FastAPI(title="NodeTrade API", version="0.1.0")
+    class TradeEvent(BaseModel):
+        account_id: str = Field(min_length=1, max_length=128)
+        event_id: str = Field(min_length=1, max_length=128)
+        symbol: str = Field(min_length=1, max_length=64)
+        event_type: str = Field(min_length=1, max_length=64)
+        ticket: int = Field(default=0, ge=0)
+        deal: int = Field(default=0, ge=0)
+        order: int = Field(default=0, ge=0)
+        volume: float = Field(default=0, ge=0)
+        price: float = Field(default=0, ge=0)
+        profit: float = 0
+        time: int = Field(gt=0)
+        payload: dict[str, Any] = Field(default_factory=dict)
+
+    class ReconcileRequest(BaseModel):
+        account_id: str = Field(min_length=1, max_length=128)
+        symbol: str = Field(min_length=1, max_length=64)
+        positions: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+        equity: float = Field(gt=0)
+        terminal_time: int = Field(gt=0)
+
+    app = FastAPI(title="NodeTrade API", version="0.2.0")
     eng = engine or NodeTradeEngine()
     store = license_store or LicenseStore(os.getenv("NODETRADE_DB", "nodetrade.db"))
     secret = license_secret or os.getenv("NODETRADE_LICENSE_SECRET")
     if not secret:
         raise RuntimeError("NODETRADE_LICENSE_SECRET must be set")
 
-    @app.get("/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
-        return HealthResponse(status="ok", version="0.1.0")
+    def require_session(account_id: str, authorization: str | None) -> None:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="missing bearer token")
+        token = authorization[7:].strip()
+        if not token or not store.authenticate(token, account_id):
+            raise HTTPException(status_code=401, detail="invalid or expired session")
+
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok", "version": "0.2.0"}
+
+    @app.post("/v1/activate")
+    def activate(req: ActivateRequest) -> dict[str, Any]:
+        token = store.create_session(req.account_id, req.activation_key, secret)
+        if token is None:
+            raise HTTPException(status_code=401, detail="activation rejected")
+        return {"account_id": req.account_id, "token": token, "expires_in": 3600}
+
+    @app.post("/v1/heartbeat")
+    def heartbeat(req: HeartbeatRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        require_session(req.account_id, authorization)
+        return {"ok": True, "server_time": int(time.time()), "account_id": req.account_id}
 
     @app.post("/v1/analyze")
-    def analyze(req: AnalyzeRequest, x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
-        if not store.verify(req.account_id, req.activation_key, secret):
-            raise HTTPException(status_code=401, detail="unauthorized")
+    def analyze(req: AnalyzeRequest, authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
+        require_session(req.account_id, authorization)
         if req.ask < req.bid:
             raise HTTPException(status_code=422, detail="ask must be >= bid")
-
         import pandas as pd
-
         frame = pd.DataFrame([c.model_dump() for c in req.candles]).rename(columns={"time": "timestamp"})
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="s", utc=True)
-        signal: Signal = eng.analyze(
-            frame,
-            bid=req.bid,
-            ask=req.ask,
-            equity=req.equity,
-            day_start_equity=req.day_start_equity,
-        )
+        signal: Signal = eng.analyze(frame, bid=req.bid, ask=req.ask, equity=req.equity, day_start_equity=req.day_start_equity)
         payload = signal.to_dict()
-        payload.update({"symbol": req.symbol, "request_id": x_request_id or secrets.token_hex(8)})
+        payload.update({"symbol": req.symbol, "request_id": x_request_id or secrets.token_hex(8), "server_time": int(time.time())})
         return payload
+
+    @app.post("/v1/trade-events")
+    def trade_event(req: TradeEvent, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        require_session(req.account_id, authorization)
+        accepted = store.accept_event_once(req.account_id, req.event_id)
+        return {"accepted": accepted, "duplicate": not accepted, "server_time": int(time.time())}
+
+    @app.post("/v1/reconcile")
+    def reconcile(req: ReconcileRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        require_session(req.account_id, authorization)
+        return {
+            "ok": True,
+            "server_time": int(time.time()),
+            "account_id": req.account_id,
+            "symbol": req.symbol,
+            "positions_received": len(req.positions),
+            "safe_to_trade": True,
+        }
 
     return app
