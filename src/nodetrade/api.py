@@ -80,6 +80,15 @@ class LicenseStore:
             db.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (now, token_hash))
         return True
 
+    def accept_event_once(self, account_id: str, event_key: str) -> bool:
+        """Atomically accept an event key once per account."""
+        try:
+            with self._connect() as db:
+                db.execute("INSERT INTO idempotency(account_id,event_key,created_at) VALUES(?,?,?)", (account_id, event_key, int(time.time())))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
     def record_trade_event(self, account_id: str, event_id: str, event_type: str, profit: float, volume: float, price: float, created_at: int) -> bool:
         try:
             with self._connect() as db:
