@@ -80,14 +80,6 @@ class LicenseStore:
             db.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (now, token_hash))
         return True
 
-    def accept_event_once(self, account_id: str, event_key: str) -> bool:
-        try:
-            with self._connect() as db:
-                db.execute("INSERT INTO idempotency(account_id,event_key,created_at) VALUES(?,?,?)", (account_id, event_key, int(time.time())))
-            return True
-        except sqlite3.IntegrityError:
-            return False
-
     def record_trade_event(self, account_id: str, event_id: str, event_type: str, profit: float, volume: float, price: float, created_at: int) -> bool:
         try:
             with self._connect() as db:
@@ -102,40 +94,18 @@ class LicenseStore:
         profits = [float(r[0]) for r in rows]
         wins = [p for p in profits if p > 0]
         losses = [p for p in profits if p < 0]
-        equity = 0.0
-        peak = 0.0
-        max_dd = 0.0
+        equity = peak = max_dd = 0.0
         curve = []
         for p in profits:
-            equity += p
-            peak = max(peak, equity)
-            max_dd = max(max_dd, peak - equity)
-            curve.append(round(equity, 8))
+            equity += p; peak = max(peak, equity); max_dd = max(max_dd, peak - equity); curve.append(round(equity, 8))
         gross_win, gross_loss = sum(wins), abs(sum(losses))
-        return {
-            "equity_curve": curve,
-            "net_pnl": round(sum(profits), 8),
-            "return": None,
-            "win_rate": round(len(wins) / len(profits), 6) if profits else 0.0,
-            "max_drawdown": round(max_dd, 8),
-            "profit_factor": round(gross_win / gross_loss, 6) if gross_loss else None,
-            "trade_count": len(profits),
-            "expectancy": round(sum(profits) / len(profits), 8) if profits else 0.0,
-            "average_win": round(gross_win / len(wins), 8) if wins else 0.0,
-            "average_loss": round(sum(losses) / len(losses), 8) if losses else 0.0,
-            "consecutive_wins": self._max_streak(profits, lambda p: p > 0),
-            "consecutive_losses": self._max_streak(profits, lambda p: p < 0),
-            "signal_statistics": {"closed_profit_events": len(profits)},
-            "model_version": "runtime-current",
-            "system_status": "online",
-        }
+        return {"equity_curve": curve, "net_pnl": round(sum(profits), 8), "return": None, "win_rate": round(len(wins)/len(profits), 6) if profits else 0.0, "max_drawdown": round(max_dd, 8), "profit_factor": round(gross_win/gross_loss, 6) if gross_loss else None, "trade_count": len(profits), "expectancy": round(sum(profits)/len(profits), 8) if profits else 0.0, "average_win": round(gross_win/len(wins), 8) if wins else 0.0, "average_loss": round(sum(losses)/len(losses), 8) if losses else 0.0, "consecutive_wins": self._max_streak(profits, lambda p:p>0), "consecutive_losses": self._max_streak(profits, lambda p:p<0), "signal_statistics": {"closed_profit_events": len(profits)}, "model_version": "runtime-current", "system_status": "online"}
 
     @staticmethod
     def _max_streak(values: list[float], predicate: Any) -> int:
         best = current = 0
         for value in values:
-            current = current + 1 if predicate(value) else 0
-            best = max(best, current)
+            current = current + 1 if predicate(value) else 0; best = max(best, current)
         return best
 
 
@@ -144,122 +114,83 @@ def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStor
         from fastapi import FastAPI, Header, HTTPException
         from pydantic import BaseModel, Field
     except ImportError as exc:
-        raise RuntimeError("Install the 'server' extra to run NodeTrade API") from exc
+        raise RuntimeError("Install FastAPI/Pydantic dependencies to run NodeTrade API") from exc
 
     class Candle(BaseModel):
         time: int
-        open: float = Field(gt=0)
-        high: float = Field(gt=0)
-        low: float = Field(gt=0)
-        close: float = Field(gt=0)
-        volume: float = Field(ge=0)
+        open: float = Field(gt=0); high: float = Field(gt=0); low: float = Field(gt=0); close: float = Field(gt=0); volume: float = Field(ge=0)
 
     class ActivateRequest(BaseModel):
-        account_id: str = Field(min_length=1, max_length=128)
-        activation_key: str = Field(min_length=1, max_length=256)
+        account_id: str = Field(min_length=1, max_length=128); activation_key: str = Field(min_length=1, max_length=256)
 
     class AnalyzeRequest(BaseModel):
-        account_id: str = Field(min_length=1, max_length=128)
-        symbol: str = Field(min_length=1, max_length=64)
-        bid: float = Field(gt=0)
-        ask: float = Field(gt=0)
-        equity: float = Field(gt=0)
-        day_start_equity: float | None = Field(default=None, gt=0)
-        tick_size: float = Field(gt=0)
-        tick_value: float = Field(gt=0)
-        volume_min: float = Field(gt=0)
-        volume_max: float = Field(gt=0)
-        volume_step: float = Field(gt=0)
-        candles: list[Candle] = Field(min_length=100, max_length=5000)
-        snapshot: dict[str, Any] = Field(default_factory=dict)
-        multi_timeframe: dict[str, list[Candle]] = Field(default_factory=dict)
+        account_id: str = Field(min_length=1, max_length=128); symbol: str = Field(min_length=1, max_length=64)
+        bid: float = Field(gt=0); ask: float = Field(gt=0); equity: float = Field(gt=0); day_start_equity: float | None = Field(default=None, gt=0)
+        tick_size: float = Field(gt=0); tick_value: float = Field(gt=0); volume_min: float = Field(gt=0); volume_max: float = Field(gt=0); volume_step: float = Field(gt=0)
+        candles: list[Candle] = Field(min_length=100, max_length=5000); snapshot: dict[str, Any] = Field(default_factory=dict); multi_timeframe: dict[str, list[Candle]] = Field(default_factory=dict)
 
     class HeartbeatRequest(BaseModel):
-        account_id: str = Field(min_length=1, max_length=128)
-        symbol: str = Field(min_length=1, max_length=64)
-        terminal_time: int = Field(gt=0)
+        account_id: str = Field(min_length=1, max_length=128); symbol: str = Field(min_length=1, max_length=64); terminal_time: int = Field(gt=0)
 
     class TradeEvent(BaseModel):
-        account_id: str = Field(min_length=1, max_length=128)
-        event_id: str = Field(min_length=1, max_length=128)
-        symbol: str = Field(min_length=1, max_length=64)
-        event_type: str = Field(min_length=1, max_length=64)
-        ticket: int = Field(default=0, ge=0)
-        deal: int = Field(default=0, ge=0)
-        order: int = Field(default=0, ge=0)
-        volume: float = Field(default=0, ge=0)
-        price: float = Field(default=0, ge=0)
-        profit: float = 0
-        time: int = Field(gt=0)
-        payload: dict[str, Any] = Field(default_factory=dict)
+        account_id: str = Field(min_length=1, max_length=128); event_id: str = Field(min_length=1, max_length=128); symbol: str = Field(min_length=1, max_length=64); event_type: str = Field(min_length=1, max_length=64)
+        ticket: int = Field(default=0, ge=0); deal: int = Field(default=0, ge=0); order: int = Field(default=0, ge=0); volume: float = Field(default=0, ge=0); price: float = Field(default=0, ge=0); profit: float = 0; time: int = Field(gt=0); payload: dict[str, Any] = Field(default_factory=dict)
 
     class ReconcileRequest(BaseModel):
-        account_id: str = Field(min_length=1, max_length=128)
-        symbol: str = Field(min_length=1, max_length=64)
-        positions: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
-        equity: float = Field(gt=0)
-        terminal_time: int = Field(gt=0)
+        account_id: str = Field(min_length=1, max_length=128); symbol: str = Field(min_length=1, max_length=64); positions: list[dict[str, Any]] = Field(default_factory=list, max_length=100); pending_orders: list[dict[str, Any]] = Field(default_factory=list, max_length=100); equity: float = Field(gt=0); terminal_time: int = Field(gt=0)
 
-    app = FastAPI(title="NodeTrade API", version="0.4.0")
-    eng = engine or NodeTradeEngine()
-    store = license_store or LicenseStore(os.getenv("NODETRADE_DB", "nodetrade.db"))
-    secret = license_secret or os.getenv("NODETRADE_LICENSE_SECRET")
+    app = FastAPI(title="NodeTrade API", version="0.4.1")
+    eng = engine or NodeTradeEngine(); store = license_store or LicenseStore(os.getenv("NODETRADE_DB", "nodetrade.db")); secret = license_secret or os.getenv("NODETRADE_LICENSE_SECRET")
     if not secret: raise RuntimeError("NODETRADE_LICENSE_SECRET must be set")
 
     def require_session(account_id: str, authorization: str | None) -> None:
-        if not authorization or not authorization.startswith("Bearer ") or not store.authenticate(authorization[7:].strip(), account_id):
-            raise HTTPException(status_code=401, detail="invalid or expired session")
+        if not authorization or not authorization.startswith("Bearer ") or not store.authenticate(authorization[7:].strip(), account_id): raise HTTPException(status_code=401, detail="invalid or expired session")
 
     @app.get("/health")
-    def health() -> dict[str, str]: return {"status": "ok", "version": "0.4.0"}
+    def health() -> dict[str, str]: return {"status":"ok", "version":"0.4.1"}
 
     @app.get("/v1/public/performance")
-    def public_performance() -> dict[str, Any]:
-        """Read-only aggregate metrics. No account IDs, credentials or control operations are exposed."""
-        return store.public_performance()
+    def public_performance() -> dict[str, Any]: return store.public_performance()
 
     @app.post("/v1/activate")
     def activate(req: ActivateRequest) -> dict[str, Any]:
         token = store.create_session(req.account_id, req.activation_key, secret)
         if token is None: raise HTTPException(status_code=401, detail="activation rejected")
-        return {"account_id": req.account_id, "token": token, "expires_in": 3600}
+        return {"account_id":req.account_id,"token":token,"expires_in":3600}
 
     @app.post("/v1/heartbeat")
     def heartbeat(req: HeartbeatRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        require_session(req.account_id, authorization)
-        return {"ok": True, "server_time": int(time.time()), "account_id": req.account_id}
+        require_session(req.account_id, authorization); return {"ok":True,"server_time":int(time.time()),"account_id":req.account_id}
 
     @app.post("/v1/analyze")
     def analyze(req: AnalyzeRequest, authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
         require_session(req.account_id, authorization)
         if req.ask < req.bid: raise HTTPException(status_code=422, detail="ask must be >= bid")
         import pandas as pd
-        frame = pd.DataFrame([c.model_dump() for c in req.candles]).rename(columns={"time": "timestamp"})
-        frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="s", utc=True)
+        frame = pd.DataFrame([c.model_dump() for c in req.candles]).rename(columns={"time":"timestamp"}); frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="s", utc=True)
         signal: Signal = eng.analyze(frame, bid=req.bid, ask=req.ask, equity=req.equity, day_start_equity=req.day_start_equity)
-        payload = signal.to_dict()
-        volume = 0.0
-        if signal.action.value in {"long", "short"} and signal.entry and signal.stop:
-            stop_distance = abs(signal.entry - signal.stop)
-            loss_per_lot = stop_distance / req.tick_size * req.tick_value
-            risk_cash = req.equity * eng.config.risk.risk_per_trade
+        payload = signal.to_dict(); volume = 0.0
+        if signal.action.value in {"long","short"} and signal.entry and signal.stop:
+            stop_distance = abs(signal.entry-signal.stop); loss_per_lot = stop_distance/req.tick_size*req.tick_value; risk_cash = req.equity*eng.config.risk.risk_per_trade
             if loss_per_lot > 0:
-                volume = min(req.volume_max, risk_cash / loss_per_lot)
-                volume = max(req.volume_min, (volume // req.volume_step) * req.volume_step)
-                volume = round(volume, 8) if volume >= req.volume_min else 0.0
-        payload.update({"symbol": req.symbol, "request_id": x_request_id or secrets.token_hex(8), "server_time": int(time.time()), "volume": volume})
-        return payload
+                volume = min(req.volume_max, risk_cash/loss_per_lot); volume = max(req.volume_min, (volume//req.volume_step)*req.volume_step); volume = round(volume,8) if volume>=req.volume_min else 0.0
+        payload.update({"symbol":req.symbol,"request_id":x_request_id or secrets.token_hex(8),"server_time":int(time.time()),"volume":volume}); return payload
 
     @app.post("/v1/trade-events")
     def trade_event(req: TradeEvent, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        require_session(req.account_id, authorization)
-        accepted = store.record_trade_event(req.account_id, req.event_id, req.event_type, req.profit, req.volume, req.price, req.time)
-        return {"accepted": accepted, "duplicate": not accepted, "server_time": int(time.time())}
+        require_session(req.account_id, authorization); accepted = store.record_trade_event(req.account_id, req.event_id, req.event_type, req.profit, req.volume, req.price, req.time); return {"accepted":accepted,"duplicate":not accepted,"server_time":int(time.time())}
 
     @app.post("/v1/reconcile")
     def reconcile(req: ReconcileRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         require_session(req.account_id, authorization)
-        # Reconciliation is deliberately conservative until broker state is fully persisted.
-        return {"ok": True, "server_time": int(time.time()), "account_id": req.account_id, "symbol": req.symbol, "positions_received": len(req.positions), "safe_to_trade": True}
+        tickets: set[int] = set(); valid = True
+        for item in req.positions:
+            if str(item.get("symbol", req.symbol)) != req.symbol or float(item.get("volume", 0)) < 0: valid = False; break
+            ticket = int(item.get("ticket", 0));
+            if ticket and ticket in tickets: valid = False; break
+            if ticket: tickets.add(ticket)
+        for item in req.pending_orders:
+            if str(item.get("symbol", req.symbol)) != req.symbol or float(item.get("volume", 0)) < 0: valid = False; break
+        return {"ok":valid,"server_time":int(time.time()),"account_id":req.account_id,"symbol":req.symbol,"positions_received":len(req.positions),"pending_orders_received":len(req.pending_orders),"safe_to_trade":valid and req.equity>0}
 
     return app
