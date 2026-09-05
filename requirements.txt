@@ -1,1 +1,7 @@
--e .[server]
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pytest>=8.0
