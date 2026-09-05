@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -24,6 +26,7 @@ class CausalDirectionModel:
     def __init__(self, horizon: int = 5, flat_threshold: float = 0.001, random_state: int = 17):
         self.horizon = horizon
         self.flat_threshold = flat_threshold
+        self.random_state = random_state
         self.model = HistGradientBoostingClassifier(
             max_iter=180, learning_rate=0.06, max_leaf_nodes=15,
             l2_regularization=1.0, random_state=random_state
@@ -68,3 +71,22 @@ class CausalDirectionModel:
                 p.setdefault(c, 0.0)
         expected = p["up"] * self.flat_threshold * 2 - p["down"] * self.flat_threshold * 2
         return ModelPrediction(p, float(expected), self.horizon)
+
+    def save(self, path: str | Path) -> Path:
+        """Persist a fitted model artifact; this is never an approval/promotion operation."""
+        if not self.fitted:
+            raise ValueError("cannot save an unfitted model")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            pickle.dump(self, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        return target
+
+    @classmethod
+    def load(cls, path: str | Path) -> "CausalDirectionModel":
+        target = Path(path)
+        with target.open("rb") as handle:
+            model = pickle.load(handle)
+        if not isinstance(model, cls) or not model.fitted:
+            raise ValueError("invalid or unfitted NodeTrade model artifact")
+        return model
