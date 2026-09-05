@@ -20,7 +20,8 @@ function drawEquity(points) {
     ctx.fillText("No equity data available", 20, 30);
     return;
   }
-  const values = points.map(p => Number(p.equity));
+  const values = points.map(Number).filter(Number.isFinite);
+  if (values.length < 2) return;
   const min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
   ctx.strokeStyle = "#34415f";
   ctx.lineWidth = 1;
@@ -34,17 +35,17 @@ function drawEquity(points) {
 
 function render(data) {
   const m = data.metrics || {};
-  $("netPnl").textContent = fmt(m.net_pnl);
-  $("returnPct").textContent = fmt(m.return_pct, "%");
-  $("winRate").textContent = fmt(m.win_rate, "%");
-  $("drawdown").textContent = fmt(m.max_drawdown_pct, "%");
-  $("profitFactor").textContent = fmt(m.profit_factor);
-  $("trades").textContent = fmt(m.total_trades);
-  $("updatedAt").textContent = data.updated_at || "—";
-  $("period").textContent = data.period || "—";
-  const risk = { "Expectancy": m.expectancy, "Average win": m.average_win, "Average loss": m.average_loss, "Consecutive losses": m.max_consecutive_losses };
+  $("netPnl").textContent = fmt(m.net_pnl ?? data.net_pnl);
+  $("returnPct").textContent = fmt(m.return_pct ?? (data.return === null ? null : data.return * 100), "%");
+  $("winRate").textContent = fmt(m.win_rate ?? (data.win_rate * 100), "%");
+  $("drawdown").textContent = fmt(m.max_drawdown_pct ?? data.max_drawdown, "%");
+  $("profitFactor").textContent = fmt(m.profit_factor ?? data.profit_factor);
+  $("trades").textContent = fmt(m.total_trades ?? data.trade_count);
+  $("updatedAt").textContent = data.updated_at || new Date().toISOString();
+  $("period").textContent = data.period || "All recorded events";
+  const risk = { "Expectancy": m.expectancy ?? data.expectancy, "Average win": m.average_win ?? data.average_win, "Average loss": m.average_loss ?? data.average_loss, "Consecutive losses": m.max_consecutive_losses ?? data.consecutive_losses };
   $("riskList").innerHTML = Object.entries(risk).map(([k,v]) => `<dt>${k}</dt><dd>${fmt(v)}</dd>`).join("");
-  const system = { "Model": data.system?.model_version, "Regime": data.system?.regime, "Signals": data.system?.signals, "Data status": data.system?.data_status };
+  const system = { "Model": data.system?.model_version ?? data.model_version, "Regime": data.system?.regime ?? "—", "Signals": data.system?.signals ?? data.signal_statistics?.closed_profit_events, "Data status": data.system?.data_status ?? data.system_status };
   $("systemList").innerHTML = Object.entries(system).map(([k,v]) => `<dt>${k}</dt><dd>${fmt(v)}</dd>`).join("");
   drawEquity(data.equity_curve || []);
   $("status").textContent = "● Public data connected";
