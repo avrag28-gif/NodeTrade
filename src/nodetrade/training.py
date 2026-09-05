@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from .backtest import run_backtest
 from .model import CausalDirectionModel
-from .walkforward import walk_forward
+from .walkforward import walk_forward_predictions
 
 REQUIRED_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume")
 
@@ -24,22 +23,16 @@ class EvaluationResult:
 
 class ModelGate:
     """Conservative promotion gate: failed candidates never replace production."""
-
     def __init__(self, minimum_oos_accuracy: float = 0.50, minimum_samples: int = 100):
         self.minimum_oos_accuracy = minimum_oos_accuracy
         self.minimum_samples = minimum_samples
 
     def approve(self, result: EvaluationResult) -> bool:
-        return (
-            result.status == "passed"
-            and result.samples >= self.minimum_samples
-            and result.metrics.get("oos_accuracy", 0.0) >= self.minimum_oos_accuracy
-        )
+        return result.status == "passed" and result.samples >= self.minimum_samples and result.metrics.get("oos_accuracy", 0.0) >= self.minimum_oos_accuracy
 
 
 class ModelRegistry:
     """Filesystem registry with explicit promotion; training never promotes implicitly."""
-
     def __init__(self, root: str | Path = "models") -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -73,22 +66,33 @@ def validate_dataset(frame: pd.DataFrame) -> None:
 
 
 def evaluate_candidate(frame: pd.DataFrame, horizon: int = 5) -> EvaluationResult:
-    """Evaluation-only entry point. No production mutation and no synthetic data generation."""
+    """Chronological OOS evaluation. No synthetic data and no production mutation."""
     validate_dataset(frame)
     split = int(len(frame) * 0.7)
-    if len(frame) - split < 100:
-        return EvaluationResult("failed", len(frame) - split, {}, "insufficient out-of-sample data")
     train, test = frame.iloc[:split].copy(), frame.iloc[split:].copy()
-    model = CausalDirectionModel(horizon=horizon)
-    model.fit(train)
-    pred = model.predict(test)
-    actual = test["close"].shift(-horizon) / test["close"] - 1.0
-    threshold = model.flat_threshold
-    labels = actual.map(lambda r: "up" if r > threshold else "down" if r < -threshold else "flat")
-    valid = labels.notna() & pred.labels.notna()
-    accuracy = float((labels[valid].to_numpy() == pred.labels[valid].to_numpy()).mean()) if valid.any() else 0.0
-    status = "passed" if accuracy >= 0.50 else "failed"
-    return EvaluationResult(status, int(valid.sum()), {"oos_accuracy": accuracy}, "")
+    if len(test) < 100:
+        return EvaluationResult("failed", len(test), {}, "insufficient out-of-sample data")
+    model = CausalDirectionModel(horizon=horizon).fit(train)
+    if not model.fitted:
+        return EvaluationResult("failed", len(test), {}, "candidate model could not fit")
+    # Evaluate each OOS row with the fitted candidate without leaking future data into features.
+    correct = 0
+    total = 0
+    for i in range(len(test) - horizon):
+        sample = test.iloc[: i + 1]
+        pred = model.predict(sample)
+        future_return = test.iloc[i + horizon].close / test.iloc[i].close - 1.0
+        actual = "up" if future_return > model.flat_threshold else "down" if future_return < -model.flat_threshold else "flat"
+        if max(pred.probabilities, key=pred.probabilities.get) == actual:
+            correct += 1
+        total += 1
+    accuracy = correct / total if total else 0.0
+    return EvaluationResult("passed" if accuracy >= 0.50 else "failed", total, {"oos_accuracy": accuracy})
+
+
+def walk_forward_evaluate(frame: pd.DataFrame, train_size: int = 200, step: int = 20, horizon: int = 5) -> pd.DataFrame:
+    validate_dataset(frame)
+    return walk_forward_predictions(frame, train_size=train_size, step=step, horizon=horizon)
 
 
 def training_status(dataset_path: str | Path) -> dict[str, Any]:
