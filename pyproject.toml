@@ -7,11 +7,17 @@ name = "nodetrade"
 version = "0.1.0"
 description = "Adaptive AI-assisted XAUUSD trading engine"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.26", "pandas>=2.1", "scikit-learn>=1.4"]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scikit-learn>=1.4",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7"
+]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
-server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic>=2.7"]
 
 [project.scripts]
 nodetrade = "nodetrade.cli:main"
@@ -21,3 +27,4 @@ pythonpath = ["src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
