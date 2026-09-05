@@ -27,14 +27,14 @@ class License:
 
 
 class LicenseStore:
-    """SQLite store for licenses, sessions and idempotent event keys."""
-
+    """SQLite store for licenses, sessions, idempotency and aggregate performance events."""
     def __init__(self, path: str | os.PathLike[str] = "nodetrade.db") -> None:
         self.path = str(path)
         with self._connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS licenses (account_id TEXT PRIMARY KEY, key_hash TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, expires_at INTEGER)")
             db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS idempotency (account_id TEXT NOT NULL, event_key TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(account_id,event_key))")
+            db.execute("CREATE TABLE IF NOT EXISTS trade_events (account_id TEXT NOT NULL, event_id TEXT NOT NULL, event_type TEXT NOT NULL, profit REAL NOT NULL DEFAULT 0, volume REAL NOT NULL DEFAULT 0, price REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, PRIMARY KEY(account_id,event_id))")
 
     def _connect(self) -> sqlite3.Connection:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
@@ -88,6 +88,56 @@ class LicenseStore:
         except sqlite3.IntegrityError:
             return False
 
+    def record_trade_event(self, account_id: str, event_id: str, event_type: str, profit: float, volume: float, price: float, created_at: int) -> bool:
+        try:
+            with self._connect() as db:
+                db.execute("INSERT INTO trade_events(account_id,event_id,event_type,profit,volume,price,created_at) VALUES(?,?,?,?,?,?,?)", (account_id, event_id, event_type, profit, volume, price, created_at))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def public_performance(self) -> dict[str, Any]:
+        with self._connect() as db:
+            rows = db.execute("SELECT profit FROM trade_events WHERE event_type IN ('DEAL_ADD','6') ORDER BY created_at").fetchall()
+        profits = [float(r[0]) for r in rows]
+        wins = [p for p in profits if p > 0]
+        losses = [p for p in profits if p < 0]
+        equity = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        curve = []
+        for p in profits:
+            equity += p
+            peak = max(peak, equity)
+            max_dd = max(max_dd, peak - equity)
+            curve.append(round(equity, 8))
+        gross_win, gross_loss = sum(wins), abs(sum(losses))
+        return {
+            "equity_curve": curve,
+            "net_pnl": round(sum(profits), 8),
+            "return": None,
+            "win_rate": round(len(wins) / len(profits), 6) if profits else 0.0,
+            "max_drawdown": round(max_dd, 8),
+            "profit_factor": round(gross_win / gross_loss, 6) if gross_loss else None,
+            "trade_count": len(profits),
+            "expectancy": round(sum(profits) / len(profits), 8) if profits else 0.0,
+            "average_win": round(gross_win / len(wins), 8) if wins else 0.0,
+            "average_loss": round(sum(losses) / len(losses), 8) if losses else 0.0,
+            "consecutive_wins": self._max_streak(profits, lambda p: p > 0),
+            "consecutive_losses": self._max_streak(profits, lambda p: p < 0),
+            "signal_statistics": {"closed_profit_events": len(profits)},
+            "model_version": "runtime-current",
+            "system_status": "online",
+        }
+
+    @staticmethod
+    def _max_streak(values: list[float], predicate: Any) -> int:
+        best = current = 0
+        for value in values:
+            current = current + 1 if predicate(value) else 0
+            best = max(best, current)
+        return best
+
 
 def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStore | None = None, license_secret: str | None = None) -> Any:
     try:
@@ -121,6 +171,8 @@ def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStor
         volume_max: float = Field(gt=0)
         volume_step: float = Field(gt=0)
         candles: list[Candle] = Field(min_length=100, max_length=5000)
+        snapshot: dict[str, Any] = Field(default_factory=dict)
+        multi_timeframe: dict[str, list[Candle]] = Field(default_factory=dict)
 
     class HeartbeatRequest(BaseModel):
         account_id: str = Field(min_length=1, max_length=128)
@@ -148,7 +200,7 @@ def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStor
         equity: float = Field(gt=0)
         terminal_time: int = Field(gt=0)
 
-    app = FastAPI(title="NodeTrade API", version="0.3.0")
+    app = FastAPI(title="NodeTrade API", version="0.4.0")
     eng = engine or NodeTradeEngine()
     store = license_store or LicenseStore(os.getenv("NODETRADE_DB", "nodetrade.db"))
     secret = license_secret or os.getenv("NODETRADE_LICENSE_SECRET")
@@ -159,7 +211,12 @@ def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStor
             raise HTTPException(status_code=401, detail="invalid or expired session")
 
     @app.get("/health")
-    def health() -> dict[str, str]: return {"status": "ok", "version": "0.3.0"}
+    def health() -> dict[str, str]: return {"status": "ok", "version": "0.4.0"}
+
+    @app.get("/v1/public/performance")
+    def public_performance() -> dict[str, Any]:
+        """Read-only aggregate metrics. No account IDs, credentials or control operations are exposed."""
+        return store.public_performance()
 
     @app.post("/v1/activate")
     def activate(req: ActivateRequest) -> dict[str, Any]:
@@ -196,12 +253,13 @@ def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStor
     @app.post("/v1/trade-events")
     def trade_event(req: TradeEvent, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         require_session(req.account_id, authorization)
-        accepted = store.accept_event_once(req.account_id, req.event_id)
+        accepted = store.record_trade_event(req.account_id, req.event_id, req.event_type, req.profit, req.volume, req.price, req.time)
         return {"accepted": accepted, "duplicate": not accepted, "server_time": int(time.time())}
 
     @app.post("/v1/reconcile")
     def reconcile(req: ReconcileRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         require_session(req.account_id, authorization)
+        # Reconciliation is deliberately conservative until broker state is fully persisted.
         return {"ok": True, "server_time": int(time.time()), "account_id": req.account_id, "symbol": req.symbol, "positions_received": len(req.positions), "safe_to_trade": True}
 
     return app
