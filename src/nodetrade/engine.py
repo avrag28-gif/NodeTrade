@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
 from .config import EngineConfig
@@ -14,24 +16,35 @@ from .types import Action, Regime, Scenario, Signal
 
 
 class NodeTradeEngine:
-    """Adaptive causal decision engine: predict -> observe -> update -> execute -> recalculate."""
+    """Production decision engine: approved model -> forecast -> risk -> decision.
 
-    def __init__(self, config: EngineConfig | None = None):
+    Live inference never trains or promotes a model. Training is an offline workflow.
+    """
+
+    def __init__(self, config: EngineConfig | None = None, model_registry: str | Path = "models"):
         self.config = config or EngineConfig()
         self.scenarios = ScenarioEngine()
         self.risk = RiskEngine(self.config.risk)
         self.costs = ExecutionCostModel(self.config.execution)
-        self.model = CausalDirectionModel(
-            horizon=max(self.config.model.horizons),
-            flat_threshold=self.config.model.flat_threshold,
-        )
-        self._last_fit_len = 0
+        self.model_registry = Path(model_registry)
+        self.model: CausalDirectionModel | None = self._load_production_model()
 
-    def _update_model(self, candles: pd.DataFrame) -> None:
-        refresh = max(1, self.config.model.refresh_bars)
-        if not self.model.fitted or len(candles) - self._last_fit_len >= refresh:
-            self.model.fit(candles)
-            self._last_fit_len = len(candles)
+    def _load_production_model(self) -> CausalDirectionModel | None:
+        metadata_path = self.model_registry / "production.json"
+        if not metadata_path.exists():
+            return None
+        try:
+            import json
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            artifact = metadata.get("artifact")
+            if not artifact:
+                return None
+            artifact_path = Path(artifact)
+            if not artifact_path.is_absolute():
+                artifact_path = self.model_registry / artifact_path.name
+            return CausalDirectionModel.load(artifact_path)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
 
     def _fuse(self, scenarios: list[Scenario], model_probs: dict[str, float]) -> list[Scenario]:
         sim = {s.name: s.probability for s in scenarios}
@@ -67,7 +80,10 @@ class NodeTradeEngine:
         if not ok:
             return Signal(Action.WAIT, 0.0, regime, None, None, None, 0.0, reasons=[reason])
 
-        self._update_model(candles)
+        # Fail closed until an explicitly approved production artifact is installed.
+        if self.model is None:
+            return Signal(Action.WAIT, 0.0, regime, None, None, None, 0.0, reasons=["production_model_unavailable"])
+
         scenarios = self.scenarios.generate(x, regime, horizon=self.config.model.horizons[-1])
         prediction = self.model.predict(candles)
         scenarios = self._fuse(scenarios, prediction.probabilities)
