@@ -139,7 +139,7 @@ def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStor
     class ReconcileRequest(BaseModel):
         account_id: str = Field(min_length=1, max_length=128); symbol: str = Field(min_length=1, max_length=64); positions: list[dict[str, Any]] = Field(default_factory=list, max_length=100); pending_orders: list[dict[str, Any]] = Field(default_factory=list, max_length=100); equity: float = Field(gt=0); terminal_time: int = Field(gt=0)
 
-    app = FastAPI(title="NodeTrade API", version="0.4.1")
+    app = FastAPI(title="NodeTrade API", version="0.4.2")
     eng = engine or NodeTradeEngine(); store = license_store or LicenseStore(os.getenv("NODETRADE_DB", "nodetrade.db")); secret = license_secret or os.getenv("NODETRADE_LICENSE_SECRET")
     if not secret: raise RuntimeError("NODETRADE_LICENSE_SECRET must be set")
 
@@ -147,7 +147,7 @@ def create_app(engine: NodeTradeEngine | None = None, license_store: LicenseStor
         if not authorization or not authorization.startswith("Bearer ") or not store.authenticate(authorization[7:].strip(), account_id): raise HTTPException(status_code=401, detail="invalid or expired session")
 
     @app.get("/health")
-    def health() -> dict[str, str]: return {"status":"ok", "version":"0.4.1"}
+    def health() -> dict[str, str]: return {"status":"ok", "version":"0.4.2"}
 
     @app.get("/v1/public/performance")
     def public_performance() -> dict[str, Any]: return store.public_performance()
